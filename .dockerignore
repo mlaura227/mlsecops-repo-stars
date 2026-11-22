@@ -1,0 +1,15 @@
+.git
+.venv
+.dvc
+__pycache__
+.pytest_cache
+.pyright
+.coverage
+htmlcov
+mlruns
+mlartifacts
+logs
+.env
+data/
+docs/screenshots/
+requirements*.txt

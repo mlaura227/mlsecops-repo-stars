@@ -1,0 +1,39 @@
+name: Quality gates and Docker build
+
+on:
+  push:
+    branches: [main, 'feature/**']
+  pull_request:
+    branches: [main]
+
+jobs:
+  python-quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v9
+        with:
+          python-version: '3.13'
+          enable-cache: true
+      - name: Install locked project dependencies
+        run: uv sync --locked
+      - name: Verify environment
+        run: uv pip check
+      - name: Flake8
+        run: uv run --locked flake8 src tests
+      - name: Pyright (gentle strict)
+        run: uv run --locked pyright
+      - name: Tests and coverage
+        run: uv run --locked pytest -q --cov=src --cov=tests --cov-report=term-missing --cov-report=xml --cov-fail-under=95
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-xml
+          path: coverage.xml
+
+  docker-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build bootstrap image
+        run: docker build --tag mlsecops-github-stars:ci .

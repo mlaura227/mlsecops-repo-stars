@@ -1,0 +1,24 @@
+# All checks use the project's locked Python 3.13 uv environment.
+# Docker builds run in GitHub Actions; a local Docker build on every commit
+# would be unnecessarily slow and require Docker Desktop at all times.
+repos:
+  - repo: local
+    hooks:
+      - id: flake8
+        name: flake8 (all project Python files)
+        entry: uv run --locked flake8 src tests
+        language: system
+        pass_filenames: false
+        always_run: true
+      - id: pyright
+        name: pyright (src only, gentle strict)
+        entry: uv run --locked pyright
+        language: system
+        pass_filenames: false
+        always_run: true
+      - id: pytest-coverage
+        name: pytest and coverage (src + tests >=95%)
+        entry: uv run --locked pytest -q --cov=src --cov=tests --cov-report=term-missing --cov-fail-under=95
+        language: system
+        pass_filenames: false
+        always_run: true
