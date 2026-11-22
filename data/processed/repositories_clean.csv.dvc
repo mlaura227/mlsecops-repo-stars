@@ -1,0 +1,5 @@
+outs:
+- md5: 98ae598cb8fce2759e0e1e3be087ee27
+  size: 36547
+  hash: md5
+  path: repositories_clean.csv

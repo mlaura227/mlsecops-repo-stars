@@ -1,6 +1,6 @@
 """Bootstrap test ensuring the package can be imported."""
 
-from mlsecops import __version__
+from src import __version__
 
 
 def test_package_version() -> None:
