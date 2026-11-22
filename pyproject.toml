@@ -26,6 +26,7 @@ dependencies = [
 
 [project.scripts]
 prepare-data = "src.prepare_data:main"
+train-model = "src.train:main"
 
 [dependency-groups]
 dev = [
