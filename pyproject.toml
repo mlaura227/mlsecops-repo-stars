@@ -1,0 +1,61 @@
+[build-system]
+requires = ["setuptools==80.9.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mlsecops-github-stars"
+version = "0.1.0"
+description = "MLOps coursework: GitHub repository star count prediction"
+readme = "README.md"
+requires-python = ">=3.13,<3.14"
+dependencies = [
+    "fastapi==0.165.0",
+    "uvicorn==0.54.0",
+    "pydantic==2.14.4",
+    "pandas==2.3.3",
+    "numpy==2.2.6",
+    "scikit-learn==1.7.2",
+    "mlflow==3.18.0",
+    "evidently==0.7.23",
+    "streamlit==1.67.0",
+    "dvc==3.67.1",
+    "plotly==5.24.1",
+    "python-dotenv==1.2.1",
+    "psycopg2-binary==2.9.11",
+]
+
+[dependency-groups]
+dev = [
+    "pytest==9.2.0",
+    "pytest-cov==7.1.0",
+    "coverage==7.10.7",
+    "flake8==7.5.0",
+    "pyright==1.1.414",
+    "pre-commit==4.7.0",
+    "httpx==0.28.1",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pyright]
+include = ["src"]
+extraPaths = ["src"]
+typeCheckingMode = "strict"
+reportMissingTypeStubs = false
+reportUnknownMemberType = false
+reportUnknownArgumentType = false
+reportUnknownVariableType = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.coverage.run]
+branch = true
+source = ["src", "tests"]
+
+[tool.coverage.report]
+fail_under = 95
+show_missing = true
+precision = 2

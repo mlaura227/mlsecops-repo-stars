@@ -1,0 +1,10 @@
+{
+  "recommendations": [
+    "ms-python.python",
+    "ms-python.vscode-pylance",
+    "ms-python.flake8",
+    "ms-python.debugpy",
+    "eamodio.gitlens",
+    "ms-azuretools.vscode-docker"
+  ]
+}
