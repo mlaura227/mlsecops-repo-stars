@@ -35,5 +35,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Build bootstrap image
-        run: docker build --tag mlsecops-github-stars:ci .
+      - name: Validate Compose schema
+        run: docker compose config --quiet
+      - name: Build Python 3.13 service image
+        run: docker compose build mlflow

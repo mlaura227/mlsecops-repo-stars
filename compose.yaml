@@ -1,0 +1,97 @@
+# Local coursework stack. Host ports bind to loopback; do not expose publicly.
+x-app-build: &app-build
+  context: .
+  dockerfile: Dockerfile
+
+services:
+  mlflow:
+    build: *app-build
+    image: mlsecops-github-stars:local
+    command:
+      - mlflow
+      - server
+      - --backend-store-uri
+      - sqlite:////mlflow/mlflow.db
+      - --artifacts-destination
+      - /mlflow/artifacts
+      - --serve-artifacts
+      - --host
+      - 0.0.0.0
+      - --port
+      - "5000"
+      - --allowed-hosts
+      - mlflow:5000,localhost:5000,127.0.0.1:5000
+    ports:
+      - "127.0.0.1:5000:5000"
+    volumes:
+      - mlflow-state:/mlflow
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/health', timeout=4)"
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 45s
+    restart: unless-stopped
+
+  prepare-data:
+    build: *app-build
+    image: mlsecops-github-stars:local
+    command:
+      - python
+      - -c
+      - >-
+        from pathlib import Path;
+        from src.data import prepare_datasets;
+        prepare_datasets(
+        Path('/app/data/raw/mlsecops_prep_set.csv'),
+        Path('/app/data/processed'))
+    volumes:
+      # The DVC-controlled raw CSV must be present on the host (dvc pull).
+      - ./data:/app/data
+    restart: "no"
+
+  api:
+    build: *app-build
+    image: mlsecops-github-stars:local
+    command:
+      - uvicorn
+      - src.api:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+    environment:
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      MLSECOPS_EXPERIMENT: github-stars-regression
+      MLSECOPS_MODEL_NAME: github-stars-regressor
+      MLSECOPS_TRAIN_CSV: /app/data/processed/train.csv
+      MLSECOPS_TEST_CSV: /app/data/processed/test.csv
+      # An empty key is for loopback-only demonstrations; configure in .env.
+      MLSECOPS_TRAIN_API_KEY: ${MLSECOPS_TRAIN_API_KEY:-}
+    depends_on:
+      mlflow:
+        condition: service_healthy
+      prepare-data:
+        condition: service_completed_successfully
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - ./data:/app/data:ro
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=4)"
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+    restart: unless-stopped
+
+volumes:
+  mlflow-state:
