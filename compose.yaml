@@ -93,5 +93,42 @@ services:
       start_period: 15s
     restart: unless-stopped
 
+
+  dashboard:
+    build: *app-build
+    image: mlsecops-github-stars:local
+    command:
+      - streamlit
+      - run
+      - dashboard/app.py
+      - --server.address=0.0.0.0
+      - --server.port=8501
+      - --server.headless=true
+    environment:
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      MLSECOPS_EXPERIMENT: github-stars-regression
+      MLSECOPS_TRAIN_CSV: /app/data/processed/train.csv
+      MLSECOPS_TEST_CSV: /app/data/processed/test.csv
+    depends_on:
+      mlflow:
+        condition: service_healthy
+      prepare-data:
+        condition: service_completed_successfully
+    ports:
+      - "127.0.0.1:8501:8501"
+    volumes:
+      - ./data:/app/data:ro
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8501/_stcore/health', timeout=4)"
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    restart: unless-stopped
+
 volumes:
   mlflow-state:

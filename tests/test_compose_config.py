@@ -24,6 +24,9 @@ def test_compose_includes_tracking_api_and_preparation() -> None:
     assert "mlflow:" in compose
     assert "prepare-data:" in compose
     assert "api:" in compose
+    assert "dashboard:" in compose
+    assert "127.0.0.1:8501:8501" in compose
+    assert "COPY dashboard/ ./dashboard/" in (ROOT / "Dockerfile").read_text(encoding="utf-8")
     assert "service_completed_successfully" in compose
     assert "service_healthy" in compose
     assert "http://mlflow:5000" in compose
@@ -55,7 +58,8 @@ def test_docker_compose_resolves_to_valid_services_when_available() -> None:
     )
     config = json.loads(result.stdout)
     services = config["services"]
-    assert set(services) == {"api", "mlflow", "prepare-data"}
+    assert set(services) == {"api", "mlflow", "prepare-data", "dashboard"}
     assert services["api"]["environment"]["MLFLOW_TRACKING_URI"] == "http://mlflow:5000"
+    assert services["dashboard"]["environment"]["MLFLOW_TRACKING_URI"] == "http://mlflow:5000"
     assert services["api"]["depends_on"]["mlflow"]["condition"] == "service_healthy"
     assert services["api"]["depends_on"]["prepare-data"]["condition"] == "service_completed_successfully"

@@ -19,6 +19,7 @@ COPY pyproject.toml uv.lock .python-version ./
 RUN uv sync --locked --no-dev --no-install-project
 
 COPY src/ ./src/
+COPY dashboard/ ./dashboard/
 
 # MLflow writes SQLite and model artifacts into a persistent named Docker volume.
 RUN groupadd --system mlsecops \
