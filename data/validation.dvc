@@ -1,0 +1,6 @@
+outs:
+- md5: 6d41f18bd0a9ebf4ac22dc83ba020b1d.dir
+  size: 31354
+  nfiles: 3
+  hash: md5
+  path: validation
