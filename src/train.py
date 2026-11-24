@@ -4,7 +4,7 @@ import argparse
 import hashlib
 import json
 import tempfile
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 import mlflow
@@ -13,6 +13,7 @@ import pandas as pd
 
 from src.data import FEATURE_COLUMNS, load_dataset
 from src.preprocessing import split_features_target
+from src.promotion import PromotionDecision, promote_candidate
 from src.training import MODEL_KINDS, ModelKind, fit_and_evaluate
 
 
@@ -23,6 +24,7 @@ class TrainingRun:
     kind: ModelKind
     run_id: str
     metrics: dict[str, float]
+    registered_model_version: int | None = None
 
 
 def _sha256(path: Path) -> str:
@@ -71,7 +73,7 @@ def train_experiment(
     """Track a trivial baseline and a challenger, registering the challenger only.
 
     Registering a version does NOT promote it to a production/Champion alias.
-    Automatic performance-gated promotion will be implemented separately.
+    Pass --auto-promote to run the performance gate after training.
     """
     if train_path.resolve() == test_path.resolve():
         raise ValueError("Training and holdout paths must differ")
@@ -101,29 +103,35 @@ def train_experiment(
             _log_evaluation_artifacts(
                 predictions=evaluation.predictions, train_hash=train_hash, test_hash=test_hash
             )
-            mlflow.sklearn.log_model(   # pyright: ignore[reportPrivateImportUsage]
+            model_info = mlflow.sklearn.log_model(  # type: ignore
                 sk_model=evaluation.pipeline,
                 name="model",
                 input_example=x_train.head(2),
-                registered_model_name=(
-                    registered_model_name if kind == "random_forest" else None
-                ),
-                skops_trusted_types=[
-                    "numpy.dtype",
-                    "sklearn.tree._tree.Tree",
-                    "sklearn.tree._classes.Tree",
-                    "sklearn.tree._classes.DecisionTreeClassifier",
-                    "sklearn.tree._classes.DecisionTreeRegressor",
-                    "sklearn.tree._classes.ExtraTreeClassifier",
-                    "sklearn.tree._classes.ExtraTreeRegressor",
-                    "sklearn.ensemble._forest.RandomForestClassifier",
-                    "sklearn.ensemble._forest.RandomForestRegressor",
-                    "sklearn.ensemble._forest.ExtraTreesClassifier",
-                    "sklearn.ensemble._forest.ExtraTreesRegressor"
-                ],
+                registered_model_name=registered_model_name if kind == "random_forest" else None,
+                # Trust only the known numpy/scikit-learn internals needed by skops.
+                skops_trusted_types=["numpy.dtype", "sklearn.tree._tree.Tree"],
             )
-            results.append(TrainingRun(kind=kind, run_id=run.info.run_id, metrics=evaluation.metrics))
+            model_version = model_info.registered_model_version if kind == "random_forest" else None
+            results.append(
+                TrainingRun(
+                    kind=kind,
+                    run_id=run.info.run_id,
+                    metrics=evaluation.metrics,
+                    registered_model_version=model_version,
+                )
+            )
     return results
+
+
+def _log_promotion_decision(run_id: str, decision: PromotionDecision) -> None:
+    """Persist the gate decision on the candidate MLflow run."""
+    with mlflow.start_run(run_id=run_id):
+        mlflow.log_dict(asdict(decision), "promotion/decision.json")
+        mlflow.set_tag("promotion.status", "accepted" if decision.accepted else "rejected")
+        mlflow.log_metric("promotion.candidate_mae", decision.candidate_metrics["mae"])
+        mlflow.log_metric("promotion.baseline_mae", decision.baseline_metrics["mae"])
+        if decision.champion_metrics is not None:
+            mlflow.log_metric("promotion.champion_mae", decision.champion_metrics["mae"])
 
 
 def main() -> None:
@@ -135,6 +143,8 @@ def main() -> None:
     parser.add_argument("--experiment", default="github-stars-regression")
     parser.add_argument("--registered-model", default="github-stars-regressor")
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--auto-promote", action="store_true")
+    parser.add_argument("--min-mae-improvement", type=float, default=0.0)
     args = parser.parse_args()
     runs = train_experiment(
         train_path=args.train,
@@ -146,3 +156,18 @@ def main() -> None:
     )
     for run in runs:
         print(f"{run.kind}: run_id={run.run_id}, metrics={run.metrics}")
+    if args.auto_promote:
+        baseline = next(run for run in runs if run.kind == "baseline")
+        challenger = next(run for run in runs if run.kind == "random_forest")
+        if challenger.registered_model_version is None:
+            raise RuntimeError("The challenger was not registered; promotion stopped")
+        decision = promote_candidate(
+            candidate_version=challenger.registered_model_version,
+            baseline_metrics=baseline.metrics,
+            test_path=args.test,
+            model_name=args.registered_model,
+            tracking_uri=args.tracking_uri,
+            min_relative_improvement=args.min_mae_improvement,
+        )
+        _log_promotion_decision(challenger.run_id, decision)
+        print(f"Promotion: {'ACCEPTED' if decision.accepted else 'REJECTED'} — {decision.reason}")
