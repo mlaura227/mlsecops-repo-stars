@@ -41,7 +41,9 @@ class FakeMLflow:
         monkeypatch.setattr(mlflow, "log_dict", self.log_dict, raising=False)
         monkeypatch.setattr(mlflow, "set_tag", self.set_tag, raising=False)
         monkeypatch.setattr(mlflow, "log_metric", self.log_metric, raising=False)
-        monkeypatch.setattr(mlflow.sklearn, "log_model", self.log_model)
+        import src.train as training_cli
+
+        monkeypatch.setattr(training_cli, "log_sklearn_model", self.log_model)
 
     def set_tracking_uri(self, uri: str) -> None:
         self.uri = uri
@@ -190,7 +192,7 @@ def test_cli_rejects_missing_registered_version(
     def unregistered_model(**kwargs: object) -> SimpleNamespace:
         return SimpleNamespace(registered_model_version=None)
 
-    monkeypatch.setattr("mlflow.sklearn.log_model", unregistered_model)
+    monkeypatch.setattr("src.train.log_sklearn_model", unregistered_model)
     monkeypatch.setattr(sys, "argv", [
         "train-model", "--train", str(train_path), "--test", str(test_path), "--auto-promote",
     ])
@@ -202,7 +204,7 @@ def test_cli_rejects_missing_registered_version(
 def test_promotion_logging_includes_champion(
     fake_mlflow: FakeMLflow,
 ) -> None:
-    from src.train import _log_promotion_decision
+    from src.train import log_promotion_decision
 
     decision = PromotionDecision(
         accepted=False, reason="no improvement", candidate_version=6,
@@ -211,6 +213,6 @@ def test_promotion_logging_includes_champion(
         baseline_metrics={"mae": 3.0, "rmse": 5.0},
         champion_metrics={"mae": 1.5, "rmse": 3.0},
     )
-    _log_promotion_decision("run-4", decision)
+    log_promotion_decision("run-4", decision)
     assert fake_mlflow.logged_tags["promotion.status"] == "rejected"
     assert fake_mlflow.logged_single_metrics["promotion.champion_mae"] == 1.5

@@ -8,8 +8,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 import mlflow
-import mlflow.sklearn
 import pandas as pd
+from mlflow.sklearn import log_model as log_sklearn_model
 
 from src.data import FEATURE_COLUMNS, load_dataset
 from src.preprocessing import split_features_target
@@ -103,7 +103,7 @@ def train_experiment(
             _log_evaluation_artifacts(
                 predictions=evaluation.predictions, train_hash=train_hash, test_hash=test_hash
             )
-            model_info = mlflow.sklearn.log_model(  # type: ignore
+            model_info = log_sklearn_model(
                 sk_model=evaluation.pipeline,
                 name="model",
                 input_example=x_train.head(2),
@@ -123,7 +123,7 @@ def train_experiment(
     return results
 
 
-def _log_promotion_decision(run_id: str, decision: PromotionDecision) -> None:
+def log_promotion_decision(run_id: str, decision: PromotionDecision) -> None:
     """Persist the gate decision on the candidate MLflow run."""
     with mlflow.start_run(run_id=run_id):
         mlflow.log_dict(asdict(decision), "promotion/decision.json")
@@ -169,5 +169,5 @@ def main() -> None:
             tracking_uri=args.tracking_uri,
             min_relative_improvement=args.min_mae_improvement,
         )
-        _log_promotion_decision(challenger.run_id, decision)
+        log_promotion_decision(challenger.run_id, decision)
         print(f"Promotion: {'ACCEPTED' if decision.accepted else 'REJECTED'} — {decision.reason}")
