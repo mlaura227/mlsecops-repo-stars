@@ -193,9 +193,11 @@ def train_models(payload: TrainRequest, settings: ApiSettings) -> TrainResponse:
         random_state=payload.random_state,
     )
     baseline, challenger = _select_training_runs(runs)
-    version = challenger.registered_model_version
-    if version is None:
+    raw_version = challenger.registered_model_version
+    if raw_version is None:
         raise RuntimeError("Challenger must have a registry version")
+    # MLflow model-version identifiers can be strings even when annotated as int.
+    version = int(raw_version)
     decision: PromotionDecision | None = None
     if payload.auto_promote:
         decision = promote_candidate(

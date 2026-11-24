@@ -5,6 +5,7 @@ import json
 from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
+from typing import cast
 from uuid import UUID
 
 import numpy as np
@@ -111,8 +112,8 @@ def test_prediction_logged_as_json_and_csv(
     assert outcome.prediction == 8000.5
     assert outcome.audit_run_id == "audit-1"
     assert str(UUID(outcome.request_id)) == outcome.request_id
-    assert list(seen[0].columns) == ["language", "forks", "open_issues", "age_days", "has_coc", "has_contributing",
-                                     "has_workflows", "has_readme"]
+    assert list(seen[0].columns) == ["language", "forks", "open_issues", "age_days", "has_coc",
+                                     "has_contributing", "has_workflows", "has_readme"]
     assert seen[0]["language"].iloc[0] == "Python"
     assert seen[0]["has_coc"].iloc[0] == 1
     assert fake_mlflow.uris == ["sqlite:///test.db"]
@@ -212,7 +213,12 @@ def training_runs() -> list[TrainingRun]:
     ]
 
 
-def test_train_with_promotion(monkeypatch: pytest.MonkeyPatch, fake_mlflow: FakeMLflow) -> None:
+@pytest.mark.parametrize("registry_version", [13, "13"])
+def test_train_with_promotion(
+    monkeypatch: pytest.MonkeyPatch,
+    fake_mlflow: FakeMLflow,
+    registry_version: int | str,
+) -> None:
     import src.api_service as service
 
     calls: list[tuple[str, dict[str, object]]] = []
@@ -220,7 +226,16 @@ def test_train_with_promotion(monkeypatch: pytest.MonkeyPatch, fake_mlflow: Fake
 
     def fake_train(**kwargs: object) -> list[TrainingRun]:
         calls.append(("train", kwargs))
-        return training_runs()
+        runs = training_runs()
+        # MLflow can supply "13" at runtime despite the dataclass annotation.
+        challenger = runs[1]
+        runs[1] = TrainingRun(
+            challenger.kind,
+            challenger.run_id,
+            challenger.metrics,
+            cast(int, registry_version),
+        )
+        return runs
 
     def fake_promote(**kwargs: object) -> PromotionDecision:
         calls.append(("promote", kwargs))
@@ -235,10 +250,12 @@ def test_train_with_promotion(monkeypatch: pytest.MonkeyPatch, fake_mlflow: Fake
     assert [item[0] for item in calls] == ["train", "promote", "log_promotion"]
     assert calls[0][1]["train_path"] == Path("train.csv")
     assert calls[1][1]["candidate_version"] == 13
+    assert isinstance(calls[1][1]["candidate_version"], int)
     assert calls[1][1]["min_relative_improvement"] == 0.01
     assert response.baseline_run_id == "run-1"
     assert response.promotion_accepted is True
     assert response.promotion_reason == "passed"
+    assert response.registered_model_version == 13
     assert response.audit_run_id == "audit-1"
     assert fake_mlflow.dicts[0][0] == "api/train.json"
     assert fake_mlflow.dicts[0][1]["promotion"]["previous_champion_version"] == 12
