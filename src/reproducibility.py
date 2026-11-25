@@ -42,6 +42,17 @@ class VerificationResult:
         return not self.errors
 
 
+def _dvc_remote_section(section: str) -> str:
+    """Normalize standard DVC `['remote "name"']` and INI remote sections.
+
+    DVC commonly wraps the remote section name in single quotes, which
+    configparser otherwise treats as part of the section identifier.
+    """
+    if section.startswith("'") and section.endswith("'"):
+        return section[1:-1]
+    return section
+
+
 def shared_remote_configured(config_path: Path) -> bool:
     """Return whether committed DVC config declares a shareable default remote."""
     if not config_path.is_file():
@@ -58,9 +69,12 @@ def shared_remote_configured(config_path: Path) -> bool:
     if not default_remote:
         return False
 
-    section = f'remote "{default_remote}"'
-    url = parser.get(section, "url", fallback="").strip()
-    return urlsplit(url).scheme.lower() in SHARED_SCHEMES
+    target_section = f'remote "{default_remote}"'
+    for section in parser.sections():
+        if _dvc_remote_section(section) == target_section:
+            url = parser.get(section, "url", fallback="").strip()
+            return urlsplit(url).scheme.lower() in SHARED_SCHEMES
+    return False
 
 
 def local_default_override(root: Path) -> str | None:
@@ -91,7 +105,7 @@ def committed_remote_has_credentials(config_path: Path) -> bool:
     return any(
         key in secret_keys
         for section in parser.sections()
-        if section.startswith('remote "')
+        if _dvc_remote_section(section).startswith('remote "')
         for key in parser.options(section)
     )
 

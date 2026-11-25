@@ -17,7 +17,7 @@ def setup_repo(root: Path) -> Path:
     (root / ".python-version").write_text("3.13\n", encoding="utf-8")
     (root / ".dvc").mkdir()
     (root / ".dvc/config").write_text(
-        '[core]\n remote = shared\n[remote "shared"]\n'
+        '[core]\n remote = shared\n[\'remote "shared"\']\n'
         ' url = s3://dvc\n endpointurl = https://example.org/bucket.s3\n',
         encoding="utf-8",
     )
@@ -106,3 +106,17 @@ def test_manual_workflow_is_opt_in_only() -> None:
     assert "DVC_ACCESS_KEY_ID" in script
     assert "DVC_SECRET_ACCESS_KEY" in script
     assert "dvc pull" in script
+
+
+def test_dvc_quoted_remote_section_is_recognized(tmp_path: Path) -> None:
+    """DVC uses single quotes around the full subsection name."""
+    root = setup_repo(tmp_path)
+    assert verify_repository(root, "shared-remote").ok
+
+
+def test_dvc_quoted_section_credentials_stay_out_of_git(tmp_path: Path) -> None:
+    root = setup_repo(tmp_path)
+    with (root / ".dvc/config").open("a", encoding="utf-8") as config_file:
+        config_file.write(" secret_access_key = leaked\n")
+    assert committed_remote_has_credentials(root / ".dvc/config")
+    assert not verify_repository(root, "shared-remote").ok
