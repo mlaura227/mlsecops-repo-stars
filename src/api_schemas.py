@@ -49,3 +49,12 @@ class TrainResponse(BaseModel):
     promotion_accepted: bool | None
     promotion_reason: str | None
     audit_run_id: str
+
+
+class ModelStatusResponse(BaseModel):
+    """Active serving model and its separation from the training registry."""
+
+    serving_model_name: str
+    serving_model_version: int
+    training_model_name: str
+    validation_protocol_id: str | None

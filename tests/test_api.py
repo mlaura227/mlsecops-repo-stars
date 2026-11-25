@@ -131,3 +131,40 @@ def test_train_rejects_client_paths_and_bad_gate(client: TestClient) -> None:
                        {"random_state": 3.5},
                        {"auto_promote": "yes"}):
         assert client.post("/train", headers={"X-API-Key": "secret"}, json=input_data).status_code == 422
+
+
+def test_model_status_endpoint(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    import src.api as api
+    from src.api_schemas import ModelStatusResponse
+
+    def fake_status(settings: ApiSettings) -> ModelStatusResponse:
+        return ModelStatusResponse(
+            serving_model_name="github-stars-regressor-validation-v1",
+            serving_model_version=11,
+            training_model_name=settings.model_name,
+            validation_protocol_id="d" * 64,
+        )
+
+    monkeypatch.setattr(api, "model_status", fake_status)
+    response = client.get("/model-status")
+    assert response.status_code == 200
+    assert response.json() == {
+        "serving_model_name": "github-stars-regressor-validation-v1",
+        "serving_model_version": 11,
+        "training_model_name": "github-stars-regressor",
+        "validation_protocol_id": "d" * 64,
+    }
+
+
+def test_model_status_endpoint_unavailable(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import src.api as api
+
+    def unavailable(settings: ApiSettings) -> object:
+        raise ChampionUnavailable("No champion alias exists")
+
+    monkeypatch.setattr(api, "model_status", unavailable)
+    response = client.get("/model-status")
+    assert response.status_code == 503
+    assert response.json()["detail"] == "No champion alias exists"

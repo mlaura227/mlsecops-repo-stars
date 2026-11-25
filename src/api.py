@@ -5,10 +5,15 @@ from typing import Annotated
 
 from fastapi import Depends, FastAPI, Header, HTTPException
 
-from src.api_schemas import PredictRequest, PredictResponse, TrainRequest, TrainResponse
-from src.api_service import ApiSettings, ChampionUnavailable, InvalidPrediction, predict_stars, train_models
+from src.api_schemas import (
+    ModelStatusResponse, PredictRequest, PredictResponse, TrainRequest, TrainResponse,
+)
+from src.api_service import (
+    ApiSettings, ChampionUnavailable, InvalidPrediction,
+    model_status, predict_stars, train_models,
+)
 
-app = FastAPI(title="GitHub Stars MLOps API", version="0.4.0")
+app = FastAPI(title="GitHub Stars MLOps API", version="0.5.0")
 
 
 def get_settings() -> ApiSettings:
@@ -20,6 +25,17 @@ def get_settings() -> ApiSettings:
 def health() -> dict[str, str]:
     """Liveness check (does not assert model availability)."""
     return {"status": "ok"}
+
+
+@app.get("/model-status", response_model=ModelStatusResponse)
+def get_model_status(
+    settings: Annotated[ApiSettings, Depends(get_settings)],
+) -> ModelStatusResponse:
+    """Read the active champion and its approval status without loading it."""
+    try:
+        return model_status(settings)
+    except ChampionUnavailable as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
 
 
 @app.post("/predict", response_model=PredictResponse)
