@@ -1,0 +1,5 @@
+[core]
+    remote = shared
+['remote "shared"']
+    url = s3://dvc
+    endpointurl = https://dagshub.com/mlaura227/mlsecops-repo-stars.s3

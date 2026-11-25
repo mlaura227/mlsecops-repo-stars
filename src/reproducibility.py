@@ -63,6 +63,39 @@ def shared_remote_configured(config_path: Path) -> bool:
     return urlsplit(url).scheme.lower() in SHARED_SCHEMES
 
 
+def local_default_override(root: Path) -> str | None:
+    """Read a machine-local default that can shadow the committed DVC remote."""
+    path = root / ".dvc/config.local"
+    if not path.is_file():
+        return None
+    parser = configparser.RawConfigParser()
+    try:
+        with path.open(encoding="utf-8") as config_file:
+            parser.read_file(config_file)
+    except (OSError, configparser.Error):
+        return "<invalid local config>"
+    return parser.get("core", "remote", fallback="").strip() or None
+
+
+def committed_remote_has_credentials(config_path: Path) -> bool:
+    """Reject credentials accidentally written to tracked DVC configuration."""
+    if not config_path.is_file():
+        return False
+    parser = configparser.RawConfigParser()
+    try:
+        with config_path.open(encoding="utf-8") as config_file:
+            parser.read_file(config_file)
+    except (OSError, configparser.Error):
+        return False
+    secret_keys = {"access_key_id", "secret_access_key", "password", "token"}
+    return any(
+        key in secret_keys
+        for section in parser.sections()
+        if section.startswith('remote "')
+        for key in parser.options(section)
+    )
+
+
 def verify_repository(root: Path, mode: CheckMode = "metadata") -> VerificationResult:
     """Validate files needed for each reproducibility level.
 
@@ -103,11 +136,29 @@ def verify_repository(root: Path, mode: CheckMode = "metadata") -> VerificationR
                 errors.append(f"Missing dataset file: {filename}; try `uv run --locked dvc pull`.")
         notes.append("Local data presence verified; a fresh-clone pull still requires remote access.")
     elif mode == "shared-remote":
-        if not shared_remote_configured(root / ".dvc/config"):
+        committed_config = root / ".dvc/config"
+        if not shared_remote_configured(committed_config):
             errors.append(
                 "No shared default DVC remote in committed .dvc/config. "
                 "A remote in .dvc/config.local is only available on this machine."
             )
+        if committed_remote_has_credentials(committed_config):
+            errors.append("DVC credentials must not be committed in .dvc/config.")
+        local_override = local_default_override(root)
+        if local_override is not None:
+            project_config = configparser.RawConfigParser()
+            try:
+                with committed_config.open(encoding="utf-8") as config_file:
+                    project_config.read_file(config_file)
+                project_default = project_config.get("core", "remote", fallback="").strip()
+            except (OSError, configparser.Error):
+                project_default = ""
+            if local_override != project_default:
+                errors.append(
+                    "Machine-local DVC default overrides the committed remote. "
+                    "Run `uv run --locked dvc remote default --unset --local` "
+                    "to clear the old local override."
+                )
         notes.append("Remote configuration checked, but credentials and actual dvc pull were not tested.")
 
     return VerificationResult(tuple(errors), tuple(notes))

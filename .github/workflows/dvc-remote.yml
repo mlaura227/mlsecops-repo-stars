@@ -1,0 +1,31 @@
+name: Manual DVC remote restore
+
+# Optional remote-access validation after storing credentials in GitHub Secrets.
+# It does not run on every PR, and cannot expose storage credentials in logs.
+"on":
+  workflow_dispatch:
+
+jobs:
+  restore-data:
+    runs-on: ubuntu-latest
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.DVC_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.DVC_SECRET_ACCESS_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v9
+        with:
+          python-version: '3.13'
+          enable-cache: true
+      - name: Verify required credentials are configured
+        run: |
+          test -n "$AWS_ACCESS_KEY_ID"
+          test -n "$AWS_SECRET_ACCESS_KEY"
+      - name: Install locked Python environment
+        run: uv sync --locked
+      - name: Validate committed remote
+        run: uv run --locked python -m src.reproducibility --mode shared-remote
+      - name: Restore DVC-tracked files
+        run: uv run --locked dvc pull
+      - name: Verify recovered datasets
+        run: uv run --locked python -m src.reproducibility --mode data
