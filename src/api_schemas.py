@@ -1,5 +1,7 @@
 """Strict HTTP request and response contracts for the GitHub stars service."""
 
+from typing import Literal
+
 from pydantic import BaseModel, ConfigDict, Field
 
 
@@ -41,7 +43,8 @@ class TrainRequest(BaseModel):
 class TrainResponse(BaseModel):
     """Training and promotion results, including the audit run identifier."""
 
-    baseline_run_id: str
+    # Validation training records baseline metrics in the challenger run.
+    baseline_run_id: str | None
     challenger_run_id: str
     baseline_metrics: dict[str, float]
     challenger_metrics: dict[str, float]
@@ -49,6 +52,9 @@ class TrainResponse(BaseModel):
     promotion_accepted: bool | None
     promotion_reason: str | None
     audit_run_id: str
+    training_workflow: Literal["legacy", "validation"] = "legacy"
+    registered_model_name: str = "github-stars-regressor"
+    validation_protocol_id: str | None = None
 
 
 class ModelStatusResponse(BaseModel):

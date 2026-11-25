@@ -10,6 +10,7 @@ import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Literal
 from uuid import uuid4
 
 import mlflow
@@ -25,7 +26,8 @@ from src.api_schemas import (
 from src.data import BOOLEAN_FEATURES, FEATURE_COLUMNS
 from src.promotion import CHAMPION_ALIAS, PromotionDecision, promote_candidate
 from src.train import TrainingRun, log_promotion_decision, train_experiment
-from src.validation_promotion import DECISION_TAG, PROTOCOL_TAG
+from src.validation_promotion import DECISION_TAG, MODEL_NAME, PROTOCOL_TAG
+from src.validation_training import ValidationTrainingResult, train_validation_candidate
 
 
 class ChampionUnavailable(Exception):
@@ -43,7 +45,8 @@ class ApiSettings:
     tracking_uri: str = "sqlite:///mlflow.db"
     experiment_name: str = "github-stars-regression"
     model_name: str = "github-stars-regressor"
-    # Optional independent serving registry. /train always uses model_name.
+    # The serving registry is independent from the selected training workflow.
+    training_workflow: Literal["legacy", "validation"] = "legacy"
     serving_model_name: str | None = None
     train_path: Path = Path("data/processed/train.csv")
     test_path: Path = Path("data/processed/test.csv")
@@ -52,7 +55,14 @@ class ApiSettings:
     @classmethod
     def from_env(cls) -> "ApiSettings":
         """Read deployment settings once per request (environment overrides)."""
+        selected = os.getenv("MLSECOPS_TRAIN_WORKFLOW", "legacy").strip().lower()
+        if selected not in ("legacy", "validation"):
+            raise ValueError("MLSECOPS_TRAIN_WORKFLOW must be 'legacy' or 'validation'")
+        workflow: Literal["legacy", "validation"] = (
+            "validation" if selected == "validation" else "legacy"
+        )
         return cls(
+            training_workflow=workflow,
             tracking_uri=os.getenv("MLFLOW_TRACKING_URI", "sqlite:///mlflow.db"),
             experiment_name=os.getenv("MLSECOPS_EXPERIMENT", "github-stars-regression"),
             model_name=os.getenv("MLSECOPS_MODEL_NAME", "github-stars-regressor"),
@@ -116,7 +126,9 @@ def model_status(settings: ApiSettings) -> ModelStatusResponse:
     return ModelStatusResponse(
         serving_model_name=model_name,
         serving_model_version=version,
-        training_model_name=settings.model_name,
+        training_model_name=(
+            MODEL_NAME if settings.training_workflow == "validation" else settings.model_name
+        ),
         validation_protocol_id=protocol_id,
     )
 
@@ -234,8 +246,72 @@ def _log_training_event(
         return run.info.run_id
 
 
+def _log_validation_training_event(
+    settings: ApiSettings, payload: TrainRequest, result: ValidationTrainingResult,
+) -> str:
+    """Log API inputs and full validation-gate results without fabricating a baseline run."""
+    mlflow.set_tracking_uri(settings.tracking_uri)
+    mlflow.set_experiment(f"{settings.experiment_name}-api")
+    with mlflow.start_run(run_name="api-train-validation") as run:
+        mlflow.set_tag("api.endpoint", "train")
+        mlflow.set_tag("training.workflow", "validation")
+        mlflow.set_tag("validation.protocol_id", result.protocol_id)
+        mlflow.log_dict(
+            {
+                "request": payload.model_dump(),
+                "workflow": "validation",
+                "registered_model_name": MODEL_NAME,
+                "protocol_id": result.protocol_id,
+                "fit_rows": result.fit_rows,
+                "validation_rows": result.validation_rows,
+                "baseline": {"run_id": None, "metrics": result.baseline_metrics},
+                "challenger": {
+                    "run_id": result.run_id,
+                    "metrics": result.candidate_metrics,
+                    "registered_model_version": result.model_version,
+                    "best_params": result.best_params,
+                },
+                "promotion": None if result.decision is None else {
+                    "accepted": result.decision.accepted,
+                    "reason": result.decision.reason,
+                    "previous_champion_version": result.decision.previous_champion_version,
+                },
+            },
+            "api/train.json",
+        )
+        return run.info.run_id
+
+
+def _train_validated(payload: TrainRequest, settings: ApiSettings) -> TrainResponse:
+    """Use the same isolated validation gate as the standalone training CLI."""
+    result = train_validation_candidate(
+        train_path=settings.train_path,
+        tracking_uri=settings.tracking_uri,
+        model_name=MODEL_NAME,
+        random_state=payload.random_state,
+        auto_promote=payload.auto_promote,
+        min_relative_improvement=payload.min_mae_improvement,
+    )
+    audit_run_id = _log_validation_training_event(settings, payload, result)
+    return TrainResponse(
+        baseline_run_id=None,
+        challenger_run_id=result.run_id,
+        baseline_metrics=result.baseline_metrics,
+        challenger_metrics=result.candidate_metrics,
+        registered_model_version=result.model_version,
+        promotion_accepted=None if result.decision is None else result.decision.accepted,
+        promotion_reason=None if result.decision is None else result.decision.reason,
+        audit_run_id=audit_run_id,
+        training_workflow="validation",
+        registered_model_name=MODEL_NAME,
+        validation_protocol_id=result.protocol_id,
+    )
+
+
 def train_models(payload: TrainRequest, settings: ApiSettings) -> TrainResponse:
-    """Train via the existing pipeline and use the Step 3 promotion gate."""
+    """Use the configured gate; legacy remains available only for rollback."""
+    if settings.training_workflow == "validation":
+        return _train_validated(payload, settings)
     runs = train_experiment(
         train_path=settings.train_path,
         test_path=settings.test_path,
@@ -271,4 +347,6 @@ def train_models(payload: TrainRequest, settings: ApiSettings) -> TrainResponse:
         promotion_accepted=None if decision is None else decision.accepted,
         promotion_reason=None if decision is None else decision.reason,
         audit_run_id=audit_run_id,
+        training_workflow="legacy",
+        registered_model_name=settings.model_name,
     )
