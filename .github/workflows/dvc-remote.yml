@@ -13,7 +13,7 @@ jobs:
       AWS_SECRET_ACCESS_KEY: ${{ secrets.DVC_SECRET_ACCESS_KEY }}
     steps:
       - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v9
+      - uses: astral-sh/setup-uv@v10.4.0
         with:
           python-version: '3.13'
           enable-cache: true
