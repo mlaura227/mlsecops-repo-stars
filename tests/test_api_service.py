@@ -22,6 +22,7 @@ from src.api_service import (
     _champion_version,
     _log_training_event,
     _select_training_runs,
+    model_status,
     predict_stars,
     train_models,
 )
@@ -309,3 +310,163 @@ def test_train_event_is_json_serializable(fake_mlflow: FakeMLflow) -> None:
     baseline, challenger = _select_training_runs(training_runs())
     _log_training_event(ApiSettings(), TrainRequest(), baseline, challenger, None)
     assert json.loads(json.dumps(fake_mlflow.dicts[0][1]))["challenger"]["registered_model_version"] == 13
+
+
+def validation_registry(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    alias: str | None = "9",
+    tags: dict[str, str] | None = None,
+) -> None:
+    """Simulate the two registry reads required before validated serving."""
+    import src.api_service as service
+
+    version_aliases = {} if alias is None else {"champion": alias}
+    model_tags = tags if tags is not None else {
+        "validation.gate_decision": "accepted",
+        "validation.protocol_id": "a" * 64,
+    }
+
+    class RegistryClient:
+        def get_registered_model(self, model_name: str) -> SimpleNamespace:
+            assert model_name == "github-stars-regressor-validation-v1"
+            return SimpleNamespace(aliases=version_aliases)
+
+        def get_model_version(self, model_name: str, version: str) -> SimpleNamespace:
+            assert model_name == "github-stars-regressor-validation-v1"
+            assert version == alias
+            return SimpleNamespace(tags=model_tags)
+
+    monkeypatch.setattr(service, "MlflowClient", RegistryClient)
+
+
+def test_validated_champion_predicted_and_audited(
+    payload: PredictRequest, monkeypatch: pytest.MonkeyPatch, fake_mlflow: FakeMLflow,
+) -> None:
+    import src.api_service as service
+
+    validation_registry(monkeypatch)
+    loaded_uris: list[str] = []
+
+    def load(model_uri: str) -> SimpleNamespace:
+        loaded_uris.append(model_uri)
+        return SimpleNamespace(predict=lambda data: np.array([460.5]))
+
+    monkeypatch.setattr(service, "load_sklearn_model", load)
+    settings = ApiSettings(serving_model_name="github-stars-regressor-validation-v1")
+    response = predict_stars(payload, settings)
+    assert response.model_name == "github-stars-regressor-validation-v1"
+    assert response.model_version == 9
+    assert loaded_uris == ["models:/github-stars-regressor-validation-v1/9"]
+    assert fake_mlflow.params[0]["model_name"] == "github-stars-regressor-validation-v1"
+    assert fake_mlflow.dicts[0][1]["model_name"] == "github-stars-regressor-validation-v1"
+    assert fake_mlflow.dicts[0][1]["validation_protocol_id"] == "a" * 64
+    assert ("validation.protocol_id", "a" * 64) in fake_mlflow.tags
+
+
+def test_serving_status_shows_both_registries(
+    monkeypatch: pytest.MonkeyPatch, fake_mlflow: FakeMLflow,
+) -> None:
+    validation_registry(monkeypatch)
+    response = model_status(ApiSettings(serving_model_name="github-stars-regressor-validation-v1"))
+    assert response.serving_model_name == "github-stars-regressor-validation-v1"
+    assert response.serving_model_version == 9
+    assert response.training_model_name == "github-stars-regressor"
+    assert response.validation_protocol_id == "a" * 64
+    assert fake_mlflow.uris == ["sqlite:///mlflow.db"]
+    assert not fake_mlflow.run_names
+
+
+def test_legacy_status_retains_default(monkeypatch: pytest.MonkeyPatch, fake_mlflow: FakeMLflow) -> None:
+    registry(monkeypatch, version="3")
+    response = model_status(ApiSettings())
+    assert response.serving_model_name == "github-stars-regressor"
+    assert response.serving_model_version == 3
+    assert response.training_model_name == "github-stars-regressor"
+    assert response.validation_protocol_id is None
+
+
+@pytest.mark.parametrize("invalid_tags", [
+    {"validation.protocol_id": "b" * 64},
+    {"validation.gate_decision": "rejected", "validation.protocol_id": "b" * 64},
+    {"validation.gate_decision": "accepted", "validation.protocol_id": "bad"},
+    {"validation.gate_decision": "accepted", "validation.protocol_id": "G" * 64},
+    {"validation.gate_decision": "accepted"},
+])
+def test_unapproved_candidate_never_loaded(
+    invalid_tags: dict[str, str], payload: PredictRequest,
+    monkeypatch: pytest.MonkeyPatch, fake_mlflow: FakeMLflow,
+) -> None:
+    import src.api_service as service
+
+    validation_registry(monkeypatch, tags=invalid_tags)
+    monkeypatch.setattr(service, "load_sklearn_model", lambda model_uri: pytest.fail("unsafe load"))
+    with pytest.raises(ChampionUnavailable, match="lacks an accepted validation"):
+        predict_stars(payload, ApiSettings(serving_model_name="github-stars-regressor-validation-v1"))
+    assert not fake_mlflow.run_names
+
+
+def test_selected_registry_without_champion_does_not_fallback(
+    monkeypatch: pytest.MonkeyPatch, fake_mlflow: FakeMLflow,
+) -> None:
+    validation_registry(monkeypatch, alias=None)
+    with pytest.raises(ChampionUnavailable, match="No champion alias"):
+        model_status(ApiSettings(serving_model_name="github-stars-regressor-validation-v1"))
+    assert not fake_mlflow.run_names
+
+
+def test_serving_env_is_opt_in(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("MLSECOPS_SERVING_MODEL_NAME", raising=False)
+    assert ApiSettings.from_env().serving_model_name is None
+    monkeypatch.setenv("MLSECOPS_SERVING_MODEL_NAME", " github-stars-regressor-validation-v1 ")
+    assert ApiSettings.from_env().serving_model_name == "github-stars-regressor-validation-v1"
+    monkeypatch.setenv("MLSECOPS_SERVING_MODEL_NAME", "  ")
+    assert ApiSettings.from_env().serving_model_name is None
+
+
+def test_api_train_remains_on_legacy_registry(
+    monkeypatch: pytest.MonkeyPatch, fake_mlflow: FakeMLflow,
+) -> None:
+    import src.api_service as service
+
+    observed: list[str] = []
+
+    def fake_train(**kwargs: object) -> list[TrainingRun]:
+        observed.append(str(kwargs["registered_model_name"]))
+        return training_runs()
+
+    monkeypatch.setattr(service, "train_experiment", fake_train)
+    train_models(
+        TrainRequest(auto_promote=False),
+        ApiSettings(serving_model_name="github-stars-regressor-validation-v1"),
+    )
+    assert observed == ["github-stars-regressor"]
+
+
+def test_invalid_legacy_alias_is_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
+    registry(monkeypatch, version="not-an-integer")
+    with pytest.raises(ChampionUnavailable, match="invalid model version"):
+        _champion_version("github-stars-regressor")
+
+
+def test_validated_serving_with_real_pipeline(
+    payload: PredictRequest, sample_dataset: pd.DataFrame,
+    monkeypatch: pytest.MonkeyPatch, fake_mlflow: FakeMLflow,
+) -> None:
+    """Approved validation registry can serve the actual sklearn pipeline."""
+    import src.api_service as service
+
+    clean = validate_dataset(sample_dataset)
+    features, target = split_features_target(clean)
+    fitted = build_pipeline("random_forest", random_state=42).fit(features, target)
+    validation_registry(monkeypatch, tags={
+        "validation.gate_decision": "accepted", "validation.protocol_id": "c" * 64,
+    })
+    monkeypatch.setattr(service, "load_sklearn_model", lambda model_uri: fitted)
+    outcome = predict_stars(
+        payload, ApiSettings(serving_model_name="github-stars-regressor-validation-v1"),
+    )
+    assert outcome.prediction > 0
+    assert outcome.model_name == "github-stars-regressor-validation-v1"
+    assert outcome.model_version == 9
+    assert fake_mlflow.dicts[0][1]["validation_protocol_id"] == "c" * 64

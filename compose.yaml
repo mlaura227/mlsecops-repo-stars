@@ -68,6 +68,8 @@ services:
       MLFLOW_TRACKING_URI: http://mlflow:5000
       MLSECOPS_EXPERIMENT: github-stars-regression
       MLSECOPS_MODEL_NAME: github-stars-regressor
+      # Independent from /train; empty means the existing legacy champion.
+      MLSECOPS_SERVING_MODEL_NAME: ${MLSECOPS_SERVING_MODEL_NAME:-}
       MLSECOPS_TRAIN_CSV: /app/data/processed/train.csv
       MLSECOPS_TEST_CSV: /app/data/processed/test.csv
       # An empty key is for loopback-only demonstrations; configure in .env.

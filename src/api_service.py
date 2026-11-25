@@ -19,10 +19,13 @@ from mlflow.exceptions import MlflowException
 from mlflow.sklearn import load_model as load_sklearn_model
 from mlflow.tracking import MlflowClient
 
-from src.api_schemas import PredictRequest, PredictResponse, TrainRequest, TrainResponse
+from src.api_schemas import (
+    ModelStatusResponse, PredictRequest, PredictResponse, TrainRequest, TrainResponse,
+)
 from src.data import BOOLEAN_FEATURES, FEATURE_COLUMNS
 from src.promotion import CHAMPION_ALIAS, PromotionDecision, promote_candidate
 from src.train import TrainingRun, log_promotion_decision, train_experiment
+from src.validation_promotion import DECISION_TAG, PROTOCOL_TAG
 
 
 class ChampionUnavailable(Exception):
@@ -40,6 +43,8 @@ class ApiSettings:
     tracking_uri: str = "sqlite:///mlflow.db"
     experiment_name: str = "github-stars-regression"
     model_name: str = "github-stars-regressor"
+    # Optional independent serving registry. /train always uses model_name.
+    serving_model_name: str | None = None
     train_path: Path = Path("data/processed/train.csv")
     test_path: Path = Path("data/processed/test.csv")
     train_api_key: str | None = None
@@ -51,6 +56,7 @@ class ApiSettings:
             tracking_uri=os.getenv("MLFLOW_TRACKING_URI", "sqlite:///mlflow.db"),
             experiment_name=os.getenv("MLSECOPS_EXPERIMENT", "github-stars-regression"),
             model_name=os.getenv("MLSECOPS_MODEL_NAME", "github-stars-regressor"),
+            serving_model_name=os.getenv("MLSECOPS_SERVING_MODEL_NAME", "").strip() or None,
             train_path=Path(os.getenv("MLSECOPS_TRAIN_CSV", "data/processed/train.csv")),
             test_path=Path(os.getenv("MLSECOPS_TEST_CSV", "data/processed/test.csv")),
             train_api_key=os.getenv("MLSECOPS_TRAIN_API_KEY") or None,
@@ -68,10 +74,51 @@ def _champion_version(model_name: str) -> int:
     alias_version = registry.aliases.get(CHAMPION_ALIAS)
     if alias_version is None:
         raise ChampionUnavailable("No champion alias exists; run training with auto-promote first")
-    version = int(alias_version)
+    try:
+        version = int(alias_version)
+    except (TypeError, ValueError) as error:
+        raise ChampionUnavailable("The champion alias points to an invalid model version") from error
     if version <= 0:
         raise ChampionUnavailable("The champion alias points to an invalid model version")
     return version
+
+
+def _serving_champion(settings: ApiSettings) -> tuple[str, int, str | None]:
+    """Resolve a pinned champion, verifying approval for a separate registry.
+
+    /train still targets settings.model_name. An explicitly selected different
+    registry is accepted only if its champion passed the versioned gate.
+    """
+    model_name = settings.serving_model_name or settings.model_name
+    version = _champion_version(model_name)
+    if model_name == settings.model_name:
+        return model_name, version, None
+
+    registered_version = MlflowClient().get_model_version(model_name, str(version))
+    tags = registered_version.tags
+    protocol_id = tags.get(PROTOCOL_TAG)
+    if (
+        tags.get(DECISION_TAG) != "accepted"
+        or not isinstance(protocol_id, str)
+        or len(protocol_id) != 64
+        or any(character not in "0123456789abcdef" for character in protocol_id)
+    ):
+        raise ChampionUnavailable(
+            "Selected serving champion lacks an accepted validation gate or protocol tag"
+        )
+    return model_name, version, protocol_id
+
+
+def model_status(settings: ApiSettings) -> ModelStatusResponse:
+    """Show the *actual* serving registry without retraining or scoring data."""
+    mlflow.set_tracking_uri(settings.tracking_uri)
+    model_name, version, protocol_id = _serving_champion(settings)
+    return ModelStatusResponse(
+        serving_model_name=model_name,
+        serving_model_version=version,
+        training_model_name=settings.model_name,
+        validation_protocol_id=protocol_id,
+    )
 
 
 def _model_features(payload: PredictRequest) -> dict[str, object]:
@@ -85,20 +132,24 @@ def _model_features(payload: PredictRequest) -> dict[str, object]:
 def _log_prediction_event(
     *, settings: ApiSettings, request_id: str, timestamp: str,
     payload: PredictRequest, prediction: float, model_version: int,
+    serving_model_name: str, protocol_id: str | None,
 ) -> str:
     """Store one full JSON audit event and drift-ready CSV as MLflow artifacts."""
     mlflow.set_experiment(f"{settings.experiment_name}-api")
     with mlflow.start_run(run_name=f"predict-{request_id}") as run:
         mlflow.set_tag("api.endpoint", "predict")
-        mlflow.log_params({"model_name": settings.model_name, "model_version": model_version})
+        mlflow.log_params({"model_name": serving_model_name, "model_version": model_version})
+        if protocol_id is not None:
+            mlflow.set_tag("validation.protocol_id", protocol_id)
         mlflow.log_dict(
             {
                 "request_id": request_id,
                 "timestamp_utc": timestamp,
                 "request": payload.model_dump(),
                 "prediction": prediction,
-                "model_name": settings.model_name,
+                "model_name": serving_model_name,
                 "model_version": model_version,
+                "validation_protocol_id": protocol_id,
             },
             "api/predict.json",
         )
@@ -119,8 +170,8 @@ def _log_prediction_event(
 def predict_stars(payload: PredictRequest, settings: ApiSettings) -> PredictResponse:
     """Load the currently approved version and log its input and output."""
     mlflow.set_tracking_uri(settings.tracking_uri)
-    version = _champion_version(settings.model_name)
-    model = load_sklearn_model(model_uri=f"models:/{settings.model_name}/{version}")
+    model_name, version, protocol_id = _serving_champion(settings)
+    model = load_sklearn_model(model_uri=f"models:/{model_name}/{version}")
     if model is None:
         raise InvalidPrediction("Registry returned no model")
     features = _model_features(payload)
@@ -134,11 +185,12 @@ def predict_stars(payload: PredictRequest, settings: ApiSettings) -> PredictResp
     audit_run_id = _log_prediction_event(
         settings=settings, request_id=request_id, timestamp=timestamp,
         payload=payload, prediction=prediction, model_version=version,
+        serving_model_name=model_name, protocol_id=protocol_id,
     )
     return PredictResponse(
         request_id=request_id,
         prediction=prediction,
-        model_name=settings.model_name,
+        model_name=model_name,
         model_version=version,
         audit_run_id=audit_run_id,
     )
