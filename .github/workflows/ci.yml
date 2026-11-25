@@ -17,6 +17,9 @@ jobs:
           enable-cache: true
       - name: Install locked project dependencies
         run: uv sync --locked
+      # Checks committed DVC pointers without requiring data or cloud secrets in CI.
+      - name: DVC metadata and Python 3.13 preflight
+        run: uv run --locked python -m src.reproducibility --mode metadata
       - name: Verify environment
         run: uv pip check
       - name: Flake8
@@ -38,4 +41,4 @@ jobs:
       - name: Validate Compose schema
         run: docker compose config --quiet
       - name: Build Python 3.13 service image
-        run: docker compose build mlflow
+        run: docker compose build
